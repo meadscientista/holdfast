@@ -1,99 +1,82 @@
 # Holdfast
 
-> Keep your AI-coding session alive through any network drop — no more typing "continue".
+Holdfast is a local proxy that keeps AI coding sessions alive across network interruptions. It sits between your tool (Claude Code, Codex, and other IDE agents) and the model API. When a request fails because the connection dropped, Holdfast holds the request, waits for connectivity to return, and replays it automatically. The session continues on its own, with no need to retype or resend.
 
-When your wifi flips (office → hotspot), your VPN reconnects, or you lose signal
-while commuting, your AI coding tool's request to the API dies and the whole turn
-freezes. You come back later and everything's broken — even though your laptop and
-internet were fine except for one short blip. Today your only fix is to type
-"continue" and hope.
+It is not an MCP server, a plugin, or a skill. It runs as a standalone background process, so it keeps working even when the network (the thing an in-model helper would depend on) is down. The accurate term for it is a local resilience proxy.
 
-**Holdfast makes that unnecessary.** It's a tiny local proxy that sits between your
-AI tool and the model API. It absorbs network drops so your session never dies.
+## What it does
 
-```
-┌──────────────────┐      ┌──────────────────────┐      ┌───────────────────┐
-│ Claude Code /     │ ───► │  Holdfast (localhost) │ ───► │  model API        │
-│ Codex / Kiro / …  │ ◄─── │  hold · probe · replay│ ◄─── │  (Anthropic/…)    │
-└──────────────────┘      └──────────────────────┘      └───────────────────┘
-   never-breaking             absorbs the outage            the flaky link
-   localhost socket
-```
-
-## Why this works (the one idea that matters)
-
-Your AI tool normally connects **straight to the API**. When wifi flips, *that*
-socket breaks and the turn errors out.
-
-With Holdfast, your tool connects to **`localhost` — a connection inside your own
-laptop that never breaks**, no matter how many times wifi drops or switches. Only
-Holdfast's connection to the API breaks, and Holdfast absorbs it: it holds your
-request, probes every 30s (for as long as you configure), and the instant the
-network returns it replays the request and streams the answer back down the still-
-alive localhost socket.
-
-**You never type "continue" — because the turn never dies in the first place.**
-That's strictly better than automating the keystroke.
-
-During a long outage, Holdfast also sends invisible keep-alive "heartbeats" to your
-tool so its connection can't idle out. This is what lets a 20–30 minute outage
-survive.
+- Sits on `localhost` and forwards your tool's API traffic to the real model API.
+- On a network error, holds the in-flight request instead of failing the turn.
+- Probes connectivity on an interval and replays the request the moment the connection is back.
+- Sends invisible keep-alive pings during a hold so the client connection doesn't time out on long outages.
+- Only retries genuine network failures. Real API responses (including 4xx/5xx) pass straight through, so a turn is never double-run.
+- Buffers the full response before sending it on, so a mid-stream drop always replays into a complete answer rather than a truncated one.
+- Passes your API key through untouched. It is never stored or logged.
 
 ## Requirements
 
-- **Node.js 16+.** Nothing else.
-- **Zero dependencies** — pure Node standard library. No `npm install`, no build,
-  no native modules. Identical on macOS, Linux, Windows.
+Node 16 or newer. No dependencies, no build step.
 
-## Quick start
+## Usage
+
+Run it directly with npx, from anywhere, on any system:
 
 ```bash
-git clone <your-repo-url> holdfast
-cd holdfast
+npx github:meadscientista/holdfast start
+```
 
-# 1. Turn it on permanently (auto-starts on every login, stays running):
-node bin/holdfast install
+Point your tool at it. For Claude Code:
 
-# 2. Point your AI tool at it (one-time, add to your shell profile):
-export ANTHROPIC_BASE_URL=http://localhost:8787   # Claude Code
-
-# 3. Use your tool exactly as before. That's it.
+```bash
+export ANTHROPIC_BASE_URL=http://localhost:8787
 claude
 ```
 
-Check it's alive anytime:
+Add that export line to your shell profile (`~/.zshrc` or `~/.bashrc`) to make it permanent. Use the tool normally; Holdfast is a transparent pass-through until the network actually drops.
+
+Prefer a local copy (to auto-start, edit, or avoid re-fetching)?
 
 ```bash
-node bin/holdfast status
+git clone https://github.com/meadscientista/holdfast.git
+cd holdfast
+node bin/holdfast start
 ```
 
-If you'd rather not auto-start, just run `node bin/holdfast start` in a spare
-terminal whenever you work.
+## Stopping it
 
-## Setting the hold duration
+From any terminal, on any system:
 
 ```bash
-node bin/holdfast start --minutes 60     # hold up to 1 hour  (default)
-node bin/holdfast start --minutes 30     # hold up to 30 min
-node bin/holdfast start --minutes 120    # hold up to 2 hours
+npx github:meadscientista/holdfast stop
 ```
 
-Or set `HOLDFAST_HOLD_MINUTES` in the environment (works with auto-start too).
+If you cloned it, `node bin/holdfast stop` does the same. Or press `Ctrl-C` in the window where it's running. `stop` frees the port; if you installed the auto-start service it also stops the current process, though it will start again on next login (use `uninstall` to prevent that).
 
-## Using it with any IDE / tool (not just Claude Code)
+## Always-on
 
-Holdfast routes **by port** — one port per provider. Any tool that lets you
-override the API base URL can be protected. Point the tool's base-URL setting at
-the matching Holdfast port:
+To have Holdfast start automatically on login:
 
-| Tool                         | What to set                              | Point it at             |
-|------------------------------|-------------------------------------------|-------------------------|
-| Claude Code                  | `ANTHROPIC_BASE_URL`                      | `http://localhost:8787` |
-| OpenAI Codex / OpenAI tools  | OpenAI base URL / `OPENAI_BASE_URL`       | `http://localhost:8788` |
-| Kiro / other Anthropic tools | provider base URL / endpoint setting      | `http://localhost:8787` |
-| Any other                    | that provider's base-URL / endpoint field | its matching port       |
+```bash
+node bin/holdfast install     # launchd (macOS), systemd (Linux), Task Scheduler notes (Windows)
+node bin/holdfast status      # confirm it's running
+node bin/holdfast uninstall   # remove auto-start
+```
 
-To protect several providers at once, configure multiple listeners:
+## Using it with other tools
+
+Holdfast routes by port. Each port maps to one upstream API; your tool chooses the port by which base URL you give it. The defaults are baked in, so they're the same on every machine.
+
+| Tool | Setting to change | Point it at |
+|---|---|---|
+| Claude Code | `ANTHROPIC_BASE_URL` | `http://localhost:8787` |
+| Codex / OpenAI tools | OpenAI base URL or `OPENAI_BASE_URL` | `http://localhost:8788` |
+| Other Anthropic tools | that provider's base URL field | `http://localhost:8787` |
+| Anything else | its base URL / endpoint field | its matching port |
+
+The base URL you give a tool must point at the port whose upstream matches that tool's provider. Anthropic tools go to the Anthropic port, OpenAI tools to the OpenAI port.
+
+Run multiple providers at once by defining listeners:
 
 ```bash
 export HOLDFAST_LISTENERS='[
@@ -103,96 +86,51 @@ export HOLDFAST_LISTENERS='[
 node bin/holdfast start
 ```
 
-Holdfast forwards each request to the right upstream and applies the same
-hold-and-replay logic to all of them. Your API keys pass through untouched and are
-never stored or logged.
+If a port is already in use, Holdfast reports it on startup. Pick another with `--port` and point your tool there.
 
-## What a drop looks like (from the log)
+## Hold duration
 
+Defaults to 60 minutes. Override per run or via environment:
+
+```bash
+node bin/holdfast start --minutes 30
 ```
-[anthropic] POST /v1/messages — request in-flight
-[anthropic] network error (ECONNRESET) — entering hold (heartbeat on)
-[anthropic] probe 1/120 … no network
-[anthropic] probe 2/120 … no network
-   … (wifi switching, commuting, VPN reconnecting) …
-[anthropic] probe 7/120 … BACK ONLINE — replaying
-[anthropic] response relayed ✓  (held 214s, session intact)
-```
-
-Live log lives at `~/.holdfast/holdfast.log`.
-
----
-
-## What kinds of "broken internet" can it survive?
-
-**✅ Handles these fully — session continues on its own:**
-
-| Situation | Why it's covered |
-|---|---|
-| Wifi flip (office → hotspot → office) | localhost socket never breaks; Holdfast re-probes and replays |
-| Short blips (2–60 seconds) while commuting | held and replayed the moment signal returns |
-| Longer outages (5, 10, 20, 30 min) | heartbeats keep the tool's socket alive; replays on return, up to your `--minutes` window |
-| VPN drop / reconnect | just another network error → held and retried |
-| DNS failures (`ENOTFOUND`, `EAI_AGAIN`) | classified as network errors → held |
-| Connection reset / refused / timeout (`ECONNRESET`, `ETIMEDOUT`, …) | classified as network → held |
-| Laptop briefly loses then regains signal | Holdfast keeps probing the whole window |
-| Multiple drops in one turn | each drop re-enters the hold loop; keeps going |
-
-**⚠️ Partially / depends:**
-
-| Situation | Reality |
-|---|---|
-| **Laptop lid closed / sleep** | If the OS suspends the process, timers pause. On wake, Holdfast resumes probing and can still recover **if within the hold window and the IDE hasn't already given up**. Keep "prevent sleep on lid close while plugged in" on (macOS: `caffeinate`, or Amphetamine) for best results. Holdfast keeps the *network* side alive; it can't stop the OS from suspending the whole machine. |
-| **Outage longer than your `--minutes`** | After the window elapses, Holdfast surfaces a real error (nothing more it can do). Set a longer window if your commute has long dead zones. |
-| **IDE has a hard per-request wall-clock cap** | Some tools abort *any* request past N minutes regardless of activity. Heartbeats defeat *idle* timeouts but cannot override a hard cap. Most tools don't have one; if yours does, that single turn may still end. |
-
-**❌ Cannot help with (out of scope):**
-
-| Situation | Why |
-|---|---|
-| The model API itself being down / returning 5xx | That's a real API answer, not a network drop — Holdfast passes it through untouched (retrying could double-run your turn). |
-| Your API key expiring / auth errors (401/403) | Real API responses; passed through so you can see and fix them. |
-| Laptop fully powered off / crashed | Nothing running can help; the process is gone. |
-| Losing the *content* already generated before a mid-turn drop | Holdfast preserves the **turn**, not partial tokens. On recovery the request is replayed cleanly (buffer-then-replay), so you get a complete answer — but a half-streamed answer from before the drop is discarded rather than stitched. |
-
-### Robustness guarantees baked in
-- **Never double-runs a turn:** only *network* errors are retried; anything the API
-  actually answered (2xx/4xx/5xx) is returned as-is.
-- **Never leaves a half-response:** the full upstream response is buffered before a
-  byte reaches your tool, so a mid-stream drop always replays cleanly.
-- **Never idles out:** heartbeats hold the client connection open through long waits.
-- **Cheap probing:** between retries it opens a bare TCP connection, not a full
-  (billable, side-effecting) API call.
 
 ## Commands
 
-| Command | Does |
+| Command | Description |
 |---|---|
 | `holdfast start [--minutes N] [--port P]` | start the proxy (default command) |
-| `holdfast status` | check every listener |
-| `holdfast install` | auto-start on login (launchd / systemd / Task Scheduler) |
+| `holdfast stop` | stop the running proxy and free the port |
+| `holdfast status` | report each listener |
+| `holdfast install` | auto-start on login |
 | `holdfast uninstall` | remove auto-start |
-| `holdfast help` | help |
+| `holdfast help` | show help |
 
-## Configuration (env vars, all optional)
+## Configuration
 
-| Var | Default | Meaning |
+| Variable | Default | Meaning |
 |---|---|---|
 | `HOLDFAST_HOLD_MINUTES` | `60` | how long to keep holding |
-| `HOLDFAST_RETRY_INTERVAL_MS` | `30000` | probe interval |
+| `HOLDFAST_RETRY_INTERVAL_MS` | `30000` | connectivity probe interval |
 | `HOLDFAST_HEARTBEAT_MS` | `15000` | keep-alive ping interval |
 | `HOLDFAST_PORT` | `8787` | default Anthropic listener port |
-| `HOLDFAST_LISTENERS` | (Anthropic only) | JSON array for multi-provider |
-| `HOLDFAST_LOG_FILE` | `~/.holdfast/holdfast.log` | log path |
+| `HOLDFAST_LISTENERS` | Anthropic only | JSON array to run multiple providers |
+| `HOLDFAST_LOG_FILE` | `~/.holdfast/holdfast.log` | log location |
 
-## Test
+## Scope
+
+Holdfast handles connection-level failures: dropped or switched networks, DNS failures, connection resets, refused connections, and timeouts, including repeated drops within a single turn and outages up to the configured window.
+
+It does not cover: the model API itself being down or returning errors (passed through as-is), expired or invalid API keys (passed through so you can see them), a machine that is fully powered off, or reconstructing a partially streamed response from before a drop (the request is replayed cleanly instead). If a tool enforces a hard per-request time limit, the keep-alive pings defeat idle timeouts but cannot override that limit.
+
+## Testing
 
 ```bash
 node test/integration.js
 ```
 
-Simulates a held streaming request through an outage (asserting heartbeats fire and
-the real response arrives) plus a normal online request.
+Simulates an upstream outage and confirms the request is held, kept alive with heartbeats, and delivered once connectivity returns, plus a normal pass-through request.
 
 ## License
 
