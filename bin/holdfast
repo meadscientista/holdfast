@@ -1,1 +1,102 @@
+#!/usr/bin/env node
+'use strict';
 
+// Holdfast CLI: start | status | install | uninstall | help
+// Flags set env vars before config loads, so `--minutes 30` == HOLDFAST_HOLD_MINUTES=30.
+
+const path = require('path');
+
+// --- parse flags into env BEFORE requiring config ---
+const argv = process.argv.slice(2);
+const cmd = argv[0] && !argv[0].startsWith('-') ? argv[0] : 'start';
+
+function flag(name) {
+  const i = argv.indexOf(name);
+  return i !== -1 && argv[i + 1] ? argv[i + 1] : null;
+}
+if (flag('--minutes')) process.env.HOLDFAST_HOLD_MINUTES = flag('--minutes');
+if (flag('--port')) process.env.HOLDFAST_PORT = flag('--port');
+if (flag('--interval')) process.env.HOLDFAST_RETRY_INTERVAL_MS = String(Number(flag('--interval')) * 1000);
+
+const http = require('http');
+const config = require('../src/config');
+
+function help() {
+  console.log(`
+Holdfast — keep your AI coding session alive through any network drop.
+
+USAGE
+  holdfast start [--minutes 60] [--port 8787] [--interval 30]
+                        Start the resilient proxy (default command)
+  holdfast status       Check whether Holdfast is running (all listeners)
+  holdfast install      Auto-start Holdfast on login (macOS launchd / Linux systemd)
+  holdfast uninstall    Remove the auto-start entry
+  holdfast help         Show this help
+
+POINT YOUR IDE AT IT (base URL / API endpoint override):
+  Claude Code:   export ANTHROPIC_BASE_URL=http://localhost:${config.listeners[0].port}
+  Codex/OpenAI:  set the OpenAI base URL to http://localhost:8788  (see README)
+  Kiro / others: set the provider's base-URL/endpoint to the matching port
+
+CONFIG (env vars, all optional)
+  HOLDFAST_HOLD_MINUTES   how long to keep holding   (default 60)
+  HOLDFAST_RETRY_INTERVAL_MS  probe interval ms       (default 30000)
+  HOLDFAST_HEARTBEAT_MS   keep-alive ping interval    (default 15000)
+  HOLDFAST_LISTENERS      JSON array of {name,port,upstream} for multi-provider
+  HOLDFAST_LOG_FILE       log path                    (default ~/.holdfast/holdfast.log)
+
+Current: hold ~${config.holdMinutes} min, ${config.listeners.length} listener(s), log ${config.logFile}
+`);
+}
+
+function status() {
+  let pending = config.listeners.length;
+  if (!pending) { console.log('no listeners configured'); return; }
+  config.listeners.forEach((l) => {
+    const req = http.get(
+      { host: '127.0.0.1', port: l.port, path: '/__holdfast/health', timeout: 3000 },
+      (res) => {
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => {
+          try {
+            const info = JSON.parse(Buffer.concat(chunks).toString());
+            console.log(`✓ [${l.name}] running on :${l.port} (pid ${info.pid}) → ${info.upstream}`);
+          } catch (_) {
+            console.log(`✓ [${l.name}] responding on :${l.port}`);
+          }
+          if (--pending === 0) process.exit(0);
+        });
+      }
+    );
+    req.on('timeout', () => req.destroy());
+    req.on('error', () => {
+      console.log(`✗ [${l.name}] not responding on :${l.port} — start with: holdfast start`);
+      if (--pending === 0) process.exit(1);
+    });
+  });
+}
+
+switch (cmd) {
+  case 'start':
+    require('../src/server').start();
+    break;
+  case 'status':
+    status();
+    break;
+  case 'install':
+    require('../src/autostart').install();
+    break;
+  case 'uninstall':
+    require('../src/autostart').uninstall();
+    break;
+  case 'help':
+  case '-h':
+  case '--help':
+    help();
+    break;
+  default:
+    console.error(`Unknown command: ${cmd}\n`);
+    help();
+    process.exit(1);
+}
