@@ -1,8 +1,10 @@
 # Holdfast
 
-Holdfast is a local proxy that keeps AI coding sessions alive across network interruptions. It sits between your tool (Claude Code, Codex, and other IDE agents) and the model API. When a request fails because the connection dropped, Holdfast holds the request, waits for connectivity to return, and replays it automatically. The session continues on its own, with no need to retype or resend.
+A network hiccup shouldn't kill a good session. Holdfast makes sure it doesn't.
 
-It is not an MCP server, a plugin, or a skill. It runs as a standalone background process, so it keeps working even when the network (the thing an in-model helper would depend on) is down. The accurate term for it is a local resilience proxy.
+It's a small local proxy that sits between your AI coding tool (Claude Code, Codex, other IDE agents) and the model API. When a request dies because the connection dropped, Holdfast catches it, hangs onto the request, waits for the network to come back, and quietly replays it. The turn picks up on its own. Nothing to retype, nothing to resend.
+
+It is deliberately not an MCP server, a plugin, or a skill. Anything that lives inside the model needs the network to do its job, which is exactly the wrong moment to depend on the network. Holdfast runs underneath all that as a plain background process, so it's already awake and doing its job before the connection ever drops. If you need a label: it's a local resilience proxy.
 
 ## What it does
 
@@ -14,17 +16,31 @@ It is not an MCP server, a plugin, or a skill. It runs as a standalone backgroun
 - Buffers the full response before sending it on, so a mid-stream drop always replays into a complete answer rather than a truncated one.
 - Passes your API key through untouched. It is never stored or logged.
 
+## Do you need it?
+
+If you only ever use Claude Code, you might not. Claude Code has a built-in watchdog: set `CLAUDE_CODE_RETRY_WATCHDOG=1` and it retries transient failures for roughly three hours on its own. For a single-tool setup that covers most of what Holdfast does.
+
+Holdfast earns its place when that isn't enough:
+
+- **You use more than one tool.** The watchdog flag is Claude Code only. Codex, Kiro, and other agents don't have an equivalent. Holdfast protects anything that lets you set a base URL, so one setup covers all of them.
+- **You want one place to configure it.** Point every tool at localhost and manage the behavior here, instead of chasing per-tool flags that may or may not exist.
+- **You want a predictable retry cadence** rather than an undocumented backoff curve.
+
+No magic, no lock-in. If the built-in flag is all you need, use that.
+
 ## Requirements
 
-Node 16 or newer. No dependencies, no build step.
+Node 16 or newer. That's the whole list: no dependencies, no build step.
 
 ## Usage
 
-Run it directly with npx, from anywhere, on any system:
+Run it straight from GitHub with npx, from anywhere, on any machine:
 
 ```bash
-npx github:meadscientista/holdfast start
+npx -y github:meadscientista/holdfast start
 ```
+
+The `-y` tells npx to fetch and run without a confirmation prompt, so this is always a single command.
 
 Point your tool at it. For Claude Code:
 
@@ -33,9 +49,9 @@ export ANTHROPIC_BASE_URL=http://localhost:8787
 claude
 ```
 
-Add that export line to your shell profile (`~/.zshrc` or `~/.bashrc`) to make it permanent. Use the tool normally; Holdfast is a transparent pass-through until the network actually drops.
+Drop that export line into your shell profile (`~/.zshrc` or `~/.bashrc`) and you can forget it's there. Use your tool exactly as before; Holdfast is an invisible pass-through until the moment the network drops, and then it earns its keep.
 
-Prefer a local copy (to auto-start, edit, or avoid re-fetching)?
+Prefer a copy on disk (to auto-start it, tweak it, or skip the re-fetch)?
 
 ```bash
 git clone https://github.com/meadscientista/holdfast.git
@@ -48,7 +64,7 @@ node bin/holdfast start
 From any terminal, on any system:
 
 ```bash
-npx github:meadscientista/holdfast stop
+npx -y github:meadscientista/holdfast stop
 ```
 
 If you cloned it, `node bin/holdfast stop` does the same. Or press `Ctrl-C` in the window where it's running. `stop` frees the port; if you installed the auto-start service it also stops the current process, though it will start again on next login (use `uninstall` to prevent that).
@@ -86,7 +102,7 @@ export HOLDFAST_LISTENERS='[
 node bin/holdfast start
 ```
 
-If a port is already in use, Holdfast reports it on startup. Pick another with `--port` and point your tool there.
+If a port is already taken, Holdfast says so on startup instead of failing silently. Pick another with `--port` and point your tool there.
 
 ## Hold duration
 
@@ -134,4 +150,4 @@ Simulates an upstream outage and confirms the request is held, kept alive with h
 
 ## License
 
-MIT
+Apache License 2.0. See [LICENSE](LICENSE).
