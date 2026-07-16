@@ -29,6 +29,7 @@ USAGE
   holdfast start [--minutes 60] [--port 8787] [--interval 30]
                         Start the resilient proxy (default command)
   holdfast status       Check whether Holdfast is running (all listeners)
+  holdfast stop         Stop any running Holdfast (frees the port; stops the service too)
   holdfast install      Auto-start Holdfast on login (macOS launchd / Linux systemd)
   holdfast uninstall    Remove the auto-start entry
   holdfast help         Show this help
@@ -51,29 +52,48 @@ Current: hold ~${config.holdMinutes} min, ${config.listeners.length} listener(s)
 
 function status() {
   let pending = config.listeners.length;
+  let anyDown = false;
   if (!pending) { console.log('no listeners configured'); return; }
+
+  const settle = (ok) => {
+    if (!ok) anyDown = true;
+    if (--pending === 0) process.exit(anyDown ? 1 : 0);
+  };
+
   config.listeners.forEach((l) => {
+    let done = false;
+    const finishOnce = (fn) => { if (done) return; done = true; fn(); };
+
     const req = http.get(
       { host: '127.0.0.1', port: l.port, path: '/__holdfast/health', timeout: 3000 },
       (res) => {
         const chunks = [];
         res.on('data', (c) => chunks.push(c));
-        res.on('end', () => {
+        res.on('end', () => finishOnce(() => {
           try {
             const info = JSON.parse(Buffer.concat(chunks).toString());
             console.log(`✓ [${l.name}] running on :${l.port} (pid ${info.pid}) → ${info.upstream}`);
           } catch (_) {
             console.log(`✓ [${l.name}] responding on :${l.port}`);
           }
-          if (--pending === 0) process.exit(0);
-        });
+          settle(true);
+        }));
       }
     );
-    req.on('timeout', () => req.destroy());
-    req.on('error', () => {
-      console.log(`✗ [${l.name}] not responding on :${l.port} — start with: holdfast start`);
-      if (--pending === 0) process.exit(1);
+
+    // Any of these ends this listener's check exactly once, so status can never
+    // hang: a wedged/old instance that never replies still trips the timeout.
+    req.on('timeout', () => {
+      req.destroy();
+      finishOnce(() => {
+        console.log(`✗ [${l.name}] on :${l.port} did not respond in time (old/stuck instance? try: holdfast stop)`);
+        settle(false);
+      });
     });
+    req.on('error', () => finishOnce(() => {
+      console.log(`✗ [${l.name}] not responding on :${l.port} — start with: holdfast start`);
+      settle(false);
+    }));
   });
 }
 
@@ -83,6 +103,9 @@ switch (cmd) {
     break;
   case 'status':
     status();
+    break;
+  case 'stop':
+    require('../src/stop').stop();
     break;
   case 'install':
     require('../src/autostart').install();
