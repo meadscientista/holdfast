@@ -30,6 +30,7 @@ USAGE
                         Start the resilient proxy (default command)
   holdfast status       Check whether Holdfast is running (all listeners)
   holdfast stop         Stop any running Holdfast (frees the port; stops the service too)
+  holdfast stats        Show lifetime counters: drops caught, sessions saved, per tool/provider
   holdfast install      Auto-start Holdfast on login (macOS launchd / Linux systemd)
   holdfast uninstall    Remove the auto-start entry
   holdfast help         Show this help
@@ -107,6 +108,25 @@ switch (cmd) {
   case 'stop':
     require('../src/stop').stop();
     break;
+  case 'stats': {
+    const { snapshot, statsFile } = require('../src/stats');
+    const s = snapshot();
+    const fmtHeld = (sec) => (sec >= 90 ? `${Math.round(sec / 60)}m` : `${sec}s`);
+    const row = (name, b) =>
+      console.log(
+        `  ${name.padEnd(14)} requests ${String(b.requests).padEnd(7)} drops ${String(b.drops).padEnd(5)} saved ${String(b.saves).padEnd(5)} gave-up ${String(b.giveups).padEnd(4)} time held ${fmtHeld(b.heldSeconds)}`
+      );
+    console.log(`\nHoldfast lifetime stats (since ${s.since})\n`);
+    console.log('By provider:');
+    const ls = Object.entries(s.listeners);
+    if (ls.length) ls.forEach(([n, b]) => row(n, b)); else console.log('  (no traffic yet)');
+    console.log('\nBy client tool:');
+    const as = Object.entries(s.agents);
+    if (as.length) as.forEach(([n, b]) => row(n, b)); else console.log('  (no traffic yet)');
+    console.log(`\n"saved" = a session that WOULD have died to a network drop but was recovered.`);
+    console.log(`Raw data: ${statsFile}\n`);
+    break;
+  }
   case 'install':
     require('../src/autostart').install();
     break;
