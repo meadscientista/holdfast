@@ -11,6 +11,7 @@ const config = require('./config');
 const log = require('./log');
 const { forwardWithHold } = require('./holdloop');
 const { targetFor } = require('./probe');
+const stats = require('./stats');
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -44,9 +45,15 @@ function makeHandler(listener) {
       res.end(JSON.stringify({ ok: true, listener: label, upstream: listener.upstream, pid: process.pid }));
       return;
     }
+    if (req.url === '/__holdfast/stats') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(stats.snapshot()));
+      return;
+    }
 
     const body = await readBody(req).catch(() => Buffer.alloc(0));
     const streaming = wantsStream(req.headers, body);
+    const agent = stats.agentName(req.headers['user-agent']);
 
     // Heartbeat state — only engaged if we actually enter a hold.
     let headersSent = false;
@@ -77,25 +84,31 @@ function makeHandler(listener) {
     const onState = (event, detail) => {
       switch (event) {
         case 'hold-enter':
-          log.warn(`[${label}] network error (${detail.code}) — entering hold` + (streaming ? ' (heartbeat on)' : ''));
+          log.warn(`[${label}] [${agent}] DISCONNECT (${detail.code}) — entering hold` + (streaming ? ' (heartbeat on)' : ''));
+          stats.record(label, req.headers['user-agent'], 'drop');
           startHeartbeat();
           break;
         case 'probe':
-          log.info(`[${label}] probe ${detail.attempt}/${detail.max} … ${detail.online ? 'BACK ONLINE — replaying' : 'no network'}`);
+          log.info(`[${label}] [${agent}] probe ${detail.attempt}/${detail.max} … ${detail.online ? 'RECONNECTED — replaying' : 'no network'}`);
           break;
         case 'replay-failed':
-          log.warn(`[${label}] probe passed but replay failed (${detail.code}) — still holding`);
+          log.warn(`[${label}] [${agent}] probe passed but replay failed (${detail.code}) — still holding`);
           break;
-        case 'recovered':
-          log.info(`[${label}] response relayed ✓  (held ${detail.heldSec}s, session intact)`);
+        case 'recovered': {
+          log.info(`[${label}] [${agent}] SAVED — response relayed after ${detail.heldSec}s hold, session intact`);
+          const t = stats.record(label, req.headers['user-agent'], 'save', detail).listeners[label];
+          log.info(`[${label}] lifetime: ${t.drops} drops caught, ${t.saves} sessions saved, ${Math.round(t.heldSeconds / 60)}m total held`);
           break;
+        }
         case 'give-up':
-          log.error(`[${label}] gave up after ${detail.heldSec}s / ${detail.attempts} attempts`);
+          log.error(`[${label}] [${agent}] GAVE UP after ${detail.heldSec}s / ${detail.attempts} attempts`);
+          stats.record(label, req.headers['user-agent'], 'giveup');
           break;
       }
     };
 
-    log.info(`[${label}] ${req.method} ${req.url} — request in-flight`);
+    log.info(`[${label}] [${agent}] ${req.method} ${req.url} — request in-flight`);
+    stats.record(label, req.headers['user-agent'], 'request');
 
     try {
       const up = await forwardWithHold(
