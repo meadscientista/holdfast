@@ -1,10 +1,10 @@
 # Holdfast
 
-A network hiccup shouldn't kill a good session. Holdfast makes sure it doesn't.
+Holdfast keeps your AI coding session running when your internet drops. Normally, if the wifi blips mid-task, the tool's API request fails, the session freezes, and you have to come back and restart it by hand — Holdfast retries the failed request automatically until the network returns, so the session finishes on its own.
 
-It's a small local proxy that sits between your AI coding tool (Claude Code, Codex, other IDE agents) and the model API. When a request dies because the connection dropped, Holdfast catches it, hangs onto the request, waits for the network to come back, and quietly replays it. The turn picks up on its own. Nothing to retype, nothing to resend.
+It works as a small proxy on `localhost`, sitting between your tool (Claude Code, Codex, other IDE agents) and the model API. When a request fails on a connection error, Holdfast holds it, checks for connectivity every 30 seconds, and replays it the moment you're back online. From the tool's side the request just took a little longer. Nothing to retype, nothing to resend.
 
-It is deliberately not an MCP server, a plugin, or a skill. Anything that lives inside the model needs the network to do its job, which is exactly the wrong moment to depend on the network. Holdfast runs underneath all that as a plain background process, so it's already awake and doing its job before the connection ever drops. If you need a label: it's a local resilience proxy.
+It is deliberately not an MCP server, a plugin, or a skill. Anything living inside the model needs the network to function — exactly what's broken during a drop. Holdfast runs underneath as a plain background process, already awake before the connection ever fails. The label, if you want one: a local resilience proxy.
 
 ## What it does
 
@@ -15,18 +15,6 @@ It is deliberately not an MCP server, a plugin, or a skill. Anything that lives 
 - Only retries genuine network failures. Real API responses (including 4xx/5xx) pass straight through, so a turn is never double-run.
 - Buffers the full response before sending it on, so a mid-stream drop always replays into a complete answer rather than a truncated one.
 - Passes your API key through untouched. It is never stored or logged.
-
-## Do you need it?
-
-If you only ever use Claude Code, you might not. Claude Code has a built-in watchdog: set `CLAUDE_CODE_RETRY_WATCHDOG=1` and it retries transient failures for roughly three hours on its own. For a single-tool setup that covers most of what Holdfast does.
-
-Holdfast earns its place when that isn't enough:
-
-- **You use more than one tool.** The watchdog flag is Claude Code only. Codex, Kiro, and other agents don't have an equivalent. Holdfast protects anything that lets you set a base URL, so one setup covers all of them.
-- **You want one place to configure it.** Point every tool at localhost and manage the behavior here, instead of chasing per-tool flags that may or may not exist.
-- **You want a predictable retry cadence** rather than an undocumented backoff curve.
-
-No magic, no lock-in. If the built-in flag is all you need, use that.
 
 ## Requirements
 
@@ -118,6 +106,7 @@ node bin/holdfast start --minutes 30
 |---|---|
 | `holdfast start [--minutes N] [--port P]` | start the proxy (default command) |
 | `holdfast stop` | stop the running proxy and free the port |
+| `holdfast stats` | lifetime counters: drops caught, sessions saved, per provider and per tool |
 | `holdfast status` | report each listener |
 | `holdfast install` | auto-start on login |
 | `holdfast uninstall` | remove auto-start |
@@ -147,6 +136,10 @@ node test/integration.js
 ```
 
 Simulates an upstream outage and confirms the request is held, kept alive with heartbeats, and delivered once connectivity returns, plus a normal pass-through request.
+
+## Seeing what it's done
+
+The running terminal logs every event as it happens: each request, each disconnect it catches, each probe, and a `SAVED` line with a running tally when a session is recovered. The same log goes to `~/.holdfast/holdfast.log`. For lifetime numbers across restarts, `holdfast stats` prints drops caught, sessions saved, give-ups, and total time held, broken down by provider and by client tool.
 
 ## License
 
