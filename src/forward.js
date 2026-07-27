@@ -32,27 +32,52 @@ function isNetworkErrorCode(code) {
   return NETWORK_ERROR_CODES.has(code);
 }
 
-// Performs one attempt against `upstreamUrl`. Resolves with
+// Performs one attempt against `listener.upstream`. Resolves with
 // { statusCode, headers, body } on any completed HTTP response (including
 // 4xx/5xx — those are real API answers and must pass through untouched).
 // Rejects with a NetworkError only when the connection itself failed.
-function forwardOnce(upstreamUrl, { method, path: reqPath, headers, body }) {
+//
+// For AWS listeners (listener.aws), the request is re-signed with SigV4 on
+// EVERY attempt: the client's original signature was computed for localhost
+// (or has expired during a hold), so it must be replaced, freshly, each time.
+function forwardOnce(listener, { method, path: reqPath, headers, body }) {
+  const upstreamUrl = typeof listener === 'string' ? listener : listener.upstream;
+  const isAws = typeof listener === 'object' && !!listener.aws;
   const upstream = new URL(upstreamUrl);
   const isHttps = upstream.protocol === 'https:';
   const transport = isHttps ? https : http;
 
-  // Copy headers untouched (auth included) but fix Host to match upstream.
-  const outHeaders = Object.assign({}, headers);
-  delete outHeaders.host;
-  delete outHeaders.Host;
-  outHeaders.host = upstream.host;
+  const wirePath = joinPath(upstream.pathname, reqPath);
+
+  let outHeaders;
+  if (isAws) {
+    outHeaders = require('./sigv4').signedHeaders({
+      method,
+      path: wirePath,
+      headers,
+      body,
+      host: upstream.host,
+    });
+    delete outHeaders.host;
+    delete outHeaders.Host;
+    outHeaders.host = upstream.host;
+    // Recompute content-length for safety; drop hop-by-hop noise.
+    delete outHeaders['content-length'];
+    if (body && body.length) outHeaders['content-length'] = body.length;
+  } else {
+    // Copy headers untouched (auth included) but fix Host to match upstream.
+    outHeaders = Object.assign({}, headers);
+    delete outHeaders.host;
+    delete outHeaders.Host;
+    outHeaders.host = upstream.host;
+  }
 
   const options = {
     protocol: upstream.protocol,
     hostname: upstream.hostname,
     port: upstream.port || (isHttps ? 443 : 80),
     method,
-    path: joinPath(upstream.pathname, reqPath),
+    path: wirePath,
     headers: outHeaders,
   };
 

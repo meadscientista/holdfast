@@ -60,6 +60,11 @@ function makeHandler(listener) {
     let heartbeat = null;
 
     const startHeartbeat = () => {
+      // AWS/Bedrock streams use the binary eventstream format — SSE comment
+      // bytes would corrupt it, so never inject heartbeats on AWS listeners.
+      // Holds there are covered up to the client's own request timeout
+      // (Claude Code: API_TIMEOUT_MS, default 10 min — raise it for longer).
+      if (listener.aws) return;
       if (!streaming || headersSent) return;
       // Commit an SSE 200 so we can drip keep-alive comments during the outage.
       res.writeHead(200, {
@@ -112,7 +117,7 @@ function makeHandler(listener) {
 
     try {
       const up = await forwardWithHold(
-        listener.upstream,
+        listener,
         { method: req.method, path: req.url, headers: req.headers, body },
         onState
       );

@@ -44,6 +44,16 @@ function parseListeners() {
       port: intEnv('HOLDFAST_PORT', 8787),
       upstream: process.env.HOLDFAST_UPSTREAM || 'https://api.anthropic.com',
     },
+    {
+      name: 'bedrock',
+      port: intEnv('HOLDFAST_BEDROCK_PORT', 8789),
+      upstream:
+        process.env.HOLDFAST_BEDROCK_UPSTREAM ||
+        `https://bedrock-runtime.${process.env.HOLDFAST_BEDROCK_REGION || process.env.AWS_REGION || 'us-east-1'}.amazonaws.com`,
+      // AWS endpoints need SigV4: Holdfast re-signs each attempt with this
+      // machine's own AWS credentials (env or ~/.aws/credentials).
+      aws: true,
+    },
   ];
 }
 

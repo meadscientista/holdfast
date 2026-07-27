@@ -14,16 +14,18 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Forwards with hold-and-retry against `upstreamUrl`. Resolves with the
+// Forwards with hold-and-retry against `listener` (its upstream URL; AWS
+// listeners get re-signed per attempt inside forwardOnce). Resolves with the
 // upstream response, or rejects (isHoldTimeout) if the hold window elapses with
 // no network. `onState(event, detail)` is an optional callback for logging.
-async function forwardWithHold(upstreamUrl, request, onState = () => {}) {
+async function forwardWithHold(listener, request, onState = () => {}) {
+  const upstreamUrl = typeof listener === 'string' ? listener : listener.upstream;
   const startedAt = Date.now();
   let attempt = 0;
 
   // Try immediately.
   try {
-    return await forwardOnce(upstreamUrl, request);
+    return await forwardOnce(listener, request);
   } catch (err) {
     if (!err.isNetworkError) throw err; // real error — pass through untouched
     onState('hold-enter', { code: err.code, message: err.message });
@@ -39,7 +41,7 @@ async function forwardWithHold(upstreamUrl, request, onState = () => {}) {
     if (!online) continue;
 
     try {
-      const res = await forwardOnce(upstreamUrl, request);
+      const res = await forwardOnce(listener, request);
       onState('recovered', { attempt, heldSec: Math.round((Date.now() - startedAt) / 1000) });
       return res;
     } catch (err) {
