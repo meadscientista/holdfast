@@ -36,9 +36,12 @@ USAGE
   holdfast help         Show this help
 
 POINT YOUR IDE AT IT (base URL / API endpoint override):
-  Claude Code:   export ANTHROPIC_BASE_URL=http://localhost:${config.listeners[0].port}
-  Codex/OpenAI:  set the OpenAI base URL to http://localhost:8788  (see README)
-  Kiro / others: set the provider's base-URL/endpoint to the matching port
+  Claude Code (Anthropic API):
+      export ANTHROPIC_BASE_URL=http://localhost:8787
+  Claude Code in Bedrock mode / Kiro (Holdfast re-signs with your AWS creds):
+      export ANTHROPIC_BEDROCK_BASE_URL=http://localhost:8789
+      export CLAUDE_CODE_SKIP_BEDROCK_AUTH=1
+  Codex/OpenAI: set the OpenAI base URL to http://localhost:8788  (see README)
 
 CONFIG (env vars, all optional)
   HOLDFAST_HOLD_MINUTES   how long to keep holding   (default 60)
