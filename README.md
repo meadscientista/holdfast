@@ -73,12 +73,28 @@ Holdfast routes by port. Each port maps to one upstream API; your tool chooses t
 
 | Tool | Setting to change | Point it at |
 |---|---|---|
-| Claude Code | `ANTHROPIC_BASE_URL` | `http://localhost:8787` |
+| Claude Code (Anthropic API) | `ANTHROPIC_BASE_URL` | `http://localhost:8787` |
+| Claude Code (Bedrock mode), Kiro | `ANTHROPIC_BEDROCK_BASE_URL` + `CLAUDE_CODE_SKIP_BEDROCK_AUTH=1` | `http://localhost:8789` |
 | Codex / OpenAI tools | OpenAI base URL or `OPENAI_BASE_URL` | `http://localhost:8788` |
 | Other Anthropic tools | that provider's base URL field | `http://localhost:8787` |
 | Anything else | its base URL / endpoint field | its matching port |
 
-The base URL you give a tool must point at the port whose upstream matches that tool's provider. Anthropic tools go to the Anthropic port, OpenAI tools to the OpenAI port.
+The base URL you give a tool must point at the port whose upstream matches that tool's provider. Anthropic tools go to the Anthropic port, OpenAI tools to the OpenAI port, Bedrock-mode tools to the Bedrock port.
+
+### AWS Bedrock (Claude Code in Bedrock mode, Kiro)
+
+Setups that talk to Claude through AWS Bedrock sign every request with AWS SigV4, and a signature is bound to the destination host — so a plain pass-through proxy would break it. Holdfast handles this properly: the Bedrock listener re-signs each request with your machine's own AWS credentials (environment or `~/.aws/credentials`, re-read every attempt so refreshed credentials are picked up mid-hold), which also means a request replayed after a long outage gets a fresh, valid signature instead of an expired one.
+
+Point Bedrock-mode Claude Code at it like this:
+
+```bash
+export CLAUDE_CODE_USE_BEDROCK=1
+export ANTHROPIC_BEDROCK_BASE_URL=http://localhost:8789
+export CLAUDE_CODE_SKIP_BEDROCK_AUTH=1   # Holdfast signs instead
+claude
+```
+
+The Bedrock upstream region follows `AWS_REGION` (default `us-east-1`); override the endpoint entirely with `HOLDFAST_BEDROCK_UPSTREAM`, the port with `HOLDFAST_BEDROCK_PORT`, and the credentials profile with `HOLDFAST_AWS_PROFILE`.
 
 Run multiple providers at once by defining listeners:
 
@@ -119,8 +135,11 @@ node bin/holdfast start --minutes 30
 | `HOLDFAST_HOLD_MINUTES` | `60` | how long to keep holding |
 | `HOLDFAST_RETRY_INTERVAL_MS` | `30000` | connectivity probe interval |
 | `HOLDFAST_HEARTBEAT_MS` | `15000` | keep-alive ping interval |
-| `HOLDFAST_PORT` | `8787` | default Anthropic listener port |
-| `HOLDFAST_LISTENERS` | Anthropic only | JSON array to run multiple providers |
+| `HOLDFAST_PORT` | `8787` | Anthropic listener port |
+| `HOLDFAST_BEDROCK_PORT` | `8789` | Bedrock listener port |
+| `HOLDFAST_BEDROCK_UPSTREAM` | regional bedrock-runtime | full Bedrock endpoint override |
+| `HOLDFAST_AWS_PROFILE` | `default` | AWS credentials profile used for signing |
+| `HOLDFAST_LISTENERS` | Anthropic + Bedrock | JSON array to run custom providers |
 | `HOLDFAST_LOG_FILE` | `~/.holdfast/holdfast.log` | log location |
 
 ## Scope
