@@ -1,10 +1,26 @@
 'use strict';
 
-// Forwards a single buffered request to a given upstream API and buffers the
-// full response before returning. Buffering guarantees that a mid-stream drop
-// never leaves the client with a half-response — nothing is sent to the client
-// until we hold the complete, successful upstream response, so a clean replay
-// is always safe.
+// Forwards a request to a given upstream API. Two primitives:
+//
+//   forwardOnce(listener, req)   -> buffers the ENTIRE response, then resolves
+//                                   with { statusCode, headers, body }. Used for
+//                                   non-streaming requests: the client waits for
+//                                   one blob anyway, so a mid-response drop can
+//                                   be replayed safely (client never saw partial).
+//
+//   openUpstream(listener, req)  -> resolves the moment response HEADERS arrive,
+//                                   with { statusCode, headers, res } where `res`
+//                                   is the LIVE response stream. The caller pipes
+//                                   it to the client so tokens arrive in real
+//                                   time (no frozen screen, no first-byte
+//                                   timeout on long turns). Rejects with a
+//                                   NetworkError only if the line dies BEFORE any
+//                                   response byte — pre-first-byte, safe to hold
+//                                   and replay.
+//
+// A drop AFTER streaming has begun is NOT replayed: the client already holds a
+// partial answer, so re-running would double-run the turn or corrupt output.
+// That case surfaces on `res` and is passed through honestly.
 
 const https = require('https');
 const http = require('http');
@@ -32,21 +48,24 @@ function isNetworkErrorCode(code) {
   return NETWORK_ERROR_CODES.has(code);
 }
 
-// Performs one attempt against `listener.upstream`. Resolves with
-// { statusCode, headers, body } on any completed HTTP response (including
-// 4xx/5xx — those are real API answers and must pass through untouched).
-// Rejects with a NetworkError only when the connection itself failed.
-//
-// For AWS listeners (listener.aws), the request is re-signed with SigV4 on
-// EVERY attempt: the client's original signature was computed for localhost
-// (or has expired during a hold), so it must be replaced, freshly, each time.
-function forwardOnce(listener, { method, path: reqPath, headers, body }) {
+function toNetworkError(err) {
+  if (err && err.isNetworkError) return err;
+  if (err && isNetworkErrorCode(err.code)) return new NetworkError(err.message, err.code);
+  // Unknown error shape — treat conservatively as network so we hold rather
+  // than kill the session.
+  return new NetworkError((err && err.message) || 'unknown error', (err && err.code) || 'EUNKNOWN');
+}
+
+// Build the transport + request options for one attempt against `listener`.
+// For AWS listeners the request is re-signed with SigV4 on EVERY attempt: the
+// client's original signature was computed for localhost (or has expired during
+// a hold), so it must be replaced, freshly, each time.
+function buildOptions(listener, { method, path: reqPath, headers, body }) {
   const upstreamUrl = typeof listener === 'string' ? listener : listener.upstream;
   const isAws = typeof listener === 'object' && !!listener.aws;
   const upstream = new URL(upstreamUrl);
   const isHttps = upstream.protocol === 'https:';
   const transport = isHttps ? https : http;
-
   const wirePath = joinPath(upstream.pathname, reqPath);
 
   let outHeaders;
@@ -72,14 +91,25 @@ function forwardOnce(listener, { method, path: reqPath, headers, body }) {
     outHeaders.host = upstream.host;
   }
 
-  const options = {
-    protocol: upstream.protocol,
-    hostname: upstream.hostname,
-    port: upstream.port || (isHttps ? 443 : 80),
-    method,
-    path: wirePath,
-    headers: outHeaders,
+  return {
+    transport,
+    options: {
+      protocol: upstream.protocol,
+      hostname: upstream.hostname,
+      port: upstream.port || (isHttps ? 443 : 80),
+      method,
+      path: wirePath,
+      headers: outHeaders,
+    },
   };
+}
+
+// One buffered attempt. Resolves with { statusCode, headers, body } on any
+// completed HTTP response (including 4xx/5xx — real API answers, passed through
+// untouched). Rejects with a NetworkError only when the connection itself failed.
+function forwardOnce(listener, request) {
+  const { transport, options } = buildOptions(listener, request);
+  const { body } = request;
 
   return new Promise((resolve, reject) => {
     const req = transport.request(options, (res) => {
@@ -98,15 +128,36 @@ function forwardOnce(listener, { method, path: reqPath, headers, body }) {
     req.setTimeout(config.upstreamTimeoutMs, () => {
       req.destroy(new NetworkError('upstream timeout', 'ETIMEDOUT'));
     });
+    req.on('error', (err) => reject(toNetworkError(err)));
 
+    if (body && body.length) req.write(body);
+    req.end();
+  });
+}
+
+// One streaming attempt. Resolves with { statusCode, headers, res } as soon as
+// response HEADERS arrive; the caller pipes `res` to the client for live tokens.
+// Rejects with a NetworkError only if the connection fails BEFORE any response
+// byte (pre-first-byte: safe to replay). Errors after headers surface on `res`.
+function openUpstream(listener, request) {
+  const { transport, options } = buildOptions(listener, request);
+  const { body } = request;
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const req = transport.request(options, (res) => {
+      settled = true;
+      resolve({ statusCode: res.statusCode, headers: res.headers, res });
+    });
+
+    // The inactivity timeout only guards the pre-response phase; once we resolve
+    // the caller owns the stream, and we must not kill a slow-but-legitimate
+    // token stream on a long turn.
+    req.setTimeout(config.upstreamTimeoutMs, () => {
+      if (!settled) req.destroy(new NetworkError('upstream timeout', 'ETIMEDOUT'));
+    });
     req.on('error', (err) => {
-      if (isNetworkErrorCode(err.code) || err.isNetworkError) {
-        reject(err.isNetworkError ? err : new NetworkError(err.message, err.code));
-      } else {
-        // Unknown error shape — treat conservatively as network so we hold
-        // rather than kill the session.
-        reject(new NetworkError(err.message, err.code || 'EUNKNOWN'));
-      }
+      if (!settled) reject(toNetworkError(err));
     });
 
     if (body && body.length) req.write(body);
@@ -121,4 +172,4 @@ function joinPath(basePath, reqPath) {
   return basePath.replace(/\/$/, '') + reqPath;
 }
 
-module.exports = { forwardOnce, NetworkError, isNetworkErrorCode };
+module.exports = { forwardOnce, openUpstream, NetworkError, isNetworkErrorCode };

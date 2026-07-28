@@ -38,11 +38,34 @@ function parseListeners() {
       // fall through to default
     }
   }
-  return [
+  // Every listener is ON by default. A listener is passive — it is just a
+  // localhost port that does nothing until a tool actually points its base URL
+  // at it — so running all of them costs nothing and requires zero decisions
+  // from the user: run one command and every supported IDE/tool is protected.
+  // (A port already in use is skipped with a warning at startup; it never takes
+  // down the others — see server.js.) Power users can still fully override the
+  // set with HOLDFAST_LISTENERS.
+
+  // KRS (Kiro's chat backend) is region-gated to a small set and is INDEPENDENT
+  // of the AWS SDK region — Kiro itself falls back to the KRS default
+  // (us-east-1) for any unsupported region, so we do NOT read AWS_REGION here
+  // (that's Bedrock's region and is often unsupported by KRS, which would
+  // forward to a non-existent runtime.<region>.kiro.dev host).
+  const KRS_REGIONS = new Set(['us-east-1', 'eu-central-1', 'us-gov-west-1']);
+  const krsRequested =
+    process.env.HOLDFAST_KIRO_REGION || process.env.HOLDFAST_CODEWHISPERER_REGION;
+  const krsRegion = KRS_REGIONS.has(krsRequested) ? krsRequested : 'us-east-1';
+
+  const listeners = [
     {
       name: 'anthropic',
       port: intEnv('HOLDFAST_PORT', 8787),
       upstream: process.env.HOLDFAST_UPSTREAM || 'https://api.anthropic.com',
+    },
+    {
+      name: 'openai',
+      port: intEnv('HOLDFAST_OPENAI_PORT', 8788),
+      upstream: process.env.HOLDFAST_OPENAI_UPSTREAM || 'https://api.openai.com',
     },
     {
       name: 'bedrock',
@@ -54,7 +77,34 @@ function parseListeners() {
       // machine's own AWS credentials (env or ~/.aws/credentials).
       aws: true,
     },
+    {
+      // Kiro's chat streams through the Kiro Runtime Service (KRS). The agent
+      // extension builds ONE streaming client:
+      //   new CodeWhispererStreaming({ ...getKrsConfig(), token: { token } })
+      // whose endpoint defaults to https://runtime.<region>.kiro.dev (NOT
+      // q.amazonaws.com and NOT codewhisperer.amazonaws.com — those are legacy /
+      // unused-for-chat). Auth is an SSO Bearer token, NOT SigV4, so Holdfast
+      // passes Authorization through untouched (aws:false).
+      //
+      // To route Kiro through this listener the client's endpoint must be set —
+      // Kiro sets an EXPLICIT endpoint, so the AWS SDK ignores AWS_ENDPOINT_URL*;
+      // the hook is Kiro's own trusted setting, in Kiro settings.json:
+      //   "codewhisperer.config.krsEndpoints": [
+      //     { "region": "us-east-1", "endpoint": "http://localhost:8790" }
+      //   ]
+      // That touches ONLY Kiro and cannot affect Claude Code or any other tool.
+      name: 'kiro',
+      port: intEnv('HOLDFAST_KIRO_PORT', 0) || intEnv('HOLDFAST_CODEWHISPERER_PORT', 8790),
+      upstream:
+        process.env.HOLDFAST_KIRO_UPSTREAM ||
+        process.env.HOLDFAST_CODEWHISPERER_UPSTREAM ||
+        `https://runtime.${krsRegion}.kiro.dev`,
+      // Bearer-token auth, not SigV4 — pass Authorization through untouched.
+      aws: false,
+    },
   ];
+
+  return listeners;
 }
 
 const config = {
