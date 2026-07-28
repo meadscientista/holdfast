@@ -38,10 +38,15 @@ USAGE
 POINT YOUR IDE AT IT (base URL / API endpoint override):
   Claude Code (Anthropic API):
       export ANTHROPIC_BASE_URL=http://localhost:8787
-  Claude Code in Bedrock mode / Kiro (Holdfast re-signs with your AWS creds):
+  Claude Code in Bedrock mode (Holdfast re-signs with your AWS creds):
       export ANTHROPIC_BEDROCK_BASE_URL=http://localhost:8789
       export CLAUDE_CODE_SKIP_BEDROCK_AUTH=1
   Codex/OpenAI: set the OpenAI base URL to http://localhost:8788  (see README)
+  Kiro (Kiro Runtime Service, bearer token): set codewhisperer.config.krsEndpoints
+      in Kiro settings to http://localhost:8790  (see README)
+
+All four listeners (Anthropic, OpenAI, Bedrock, Kiro) start by default — nothing
+to enable. Just run "holdfast start" and point each tool at its port.
 
 CONFIG (env vars, all optional)
   HOLDFAST_HOLD_MINUTES   how long to keep holding   (default 60)
